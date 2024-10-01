@@ -1,17 +1,20 @@
 import csv
 import os
+from typing import Optional
 
 import polars as pl
 
-from preprocessing.series_semantic import infer_series_semantic
-from terminal_tools import prompts, wait_for_key, draw_box
-from terminal_tools.inception import Context
+from analyzer_interface import (AnalyzerInterface, InputColumn,
+                                UserInputColumn, column_automap,
+                                get_data_type_compatibility_score)
 from analyzers import all_analyzers
-from analyzer_interface import column_automap, UserInputColumn, AnalyzerInterface, InputColumn, get_data_type_compatibility_score
-from typing import Optional
+from preprocessing.series_semantic import infer_series_semantic
+from storage import Project, Storage
+from terminal_tools import draw_box, prompts, wait_for_key
+from terminal_tools.inception import TerminalContext
 
 
-def new_analysis(context: Context):
+def new_project(context: TerminalContext, storage: Storage):
   with context.nest(draw_box("1. Data Source", padding_lines=0)):
     print("Select a file for your analysis")
     selected_file = prompts.file_selector("Select a file")
@@ -55,20 +58,90 @@ def new_analysis(context: Context):
       return
 
   with context.nest(draw_box("2. Data preview", padding_lines=0)):
-    print(df)
-
-    user_columns = [
-      UserInputColumn(name=col, data_type=semantic.data_type)
-      for col in df.columns
-      if (semantic := infer_series_semantic(df[col])) is not None
-    ]
-
-    print("Inferred column semantics:")
-    for col in user_columns:
-      print(f"  {col.name}: {col.data_type}")
+    input_preview(df)
     wait_for_key(True)
 
-  with context.nest(draw_box("3. Choose an analysis", padding_lines=0)):
+  with context.nest(draw_box("3. Project Setup", padding_lines=0)):
+    print("Choose a project name. You can reload the project later.")
+    suggested_project_name = os.path.splitext(
+      os.path.basename(selected_file))[0]
+    project_name = prompts.text(
+      "Project name", default=suggested_project_name
+    )
+
+    project = storage.init_project(display_name=project_name, input=df)
+    print("Project created!")
+    wait_for_key(True)
+    return ProjectInstance(
+      id=project.id,
+      display_name=project.display_name,
+      input=df
+    )
+
+
+def select_project(context: TerminalContext, storage: Storage):
+  while True:
+    with context.nest(draw_box("Choose a project", padding_lines=0)):
+      projects = storage.list_projects()
+      if not projects:
+        print("There are no previously created projects.")
+        wait_for_key(True)
+        return None
+
+      project = prompts.list_input(
+        "Which project?",
+        choices=[
+          (project.display_name, project)
+          for project in projects
+        ],
+      )
+
+      if project is None:
+        return None
+
+    with context.nest(draw_box(f"Project: {project.display_name}", padding_lines=0)):
+      df = storage.load_project_input(project.id)
+      input_preview(df)
+      confirm_load = prompts.confirm("Load this project?", default=True)
+      if confirm_load:
+        return ProjectInstance(
+          id=project.id,
+          display_name=project.display_name,
+          input=df
+        )
+
+
+class ProjectInstance(Project):
+  input: pl.DataFrame
+
+  class Config:
+    arbitrary_types_allowed = True
+
+
+def project_main(context: TerminalContext, storage: Storage, project: ProjectInstance):
+  while True:
+    with context.nest(draw_box(f"CIB Mango Tree/Project: {project.display_name}", padding_lines=0)):
+      action = prompts.list_input(
+        "What would you like to do?",
+        choices=[
+          ("New analysis", "new_analysis"),
+          ("(Back)", "back"),
+        ],
+      )
+
+    if action is None:
+      return
+
+    if action == "back":
+      return
+
+    if action == "new_analysis":
+      new_analysis(context, storage, project)
+
+
+def new_analysis(context: TerminalContext, storage: Storage, project: ProjectInstance):
+  df = project.input
+  with context.nest(draw_box("Choose an analysis", padding_lines=0)):
     analyzer: Optional[AnalyzerInterface] = prompts.list_input(
       "Which analysis?",
       choices=[
@@ -87,6 +160,7 @@ def new_analysis(context: Context):
     with context.nest(analyzer.long_description or analyzer.short_description):
       wait_for_key(True)
 
+    user_columns = get_user_columns(df)
     draft_column_mapping = column_automap(
       user_columns,
       analyzer.input.columns
@@ -177,3 +251,19 @@ def new_analysis(context: Context):
       print("Canceled")
 
     wait_for_key(True)
+
+
+def input_preview(df: pl.DataFrame):
+  user_columns = get_user_columns(df)
+  print(df)
+  print("Inferred column semantics:")
+  for col in user_columns:
+    print(f"  {col.name}: {col.data_type}")
+
+
+def get_user_columns(df: pl.DataFrame):
+  return [
+    UserInputColumn(name=col, data_type=semantic.data_type)
+    for col in df.columns
+    if (semantic := infer_series_semantic(df[col])) is not None
+  ]
