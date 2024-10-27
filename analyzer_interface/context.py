@@ -4,7 +4,7 @@ import polars as pl
 from dash import Dash
 from pydantic import BaseModel
 from .interface import SecondaryAnalyzerInterface
-from typing import TypeVar
+from typing import TypeVar, Union
 
 
 class PrimaryAnalyzerContext(ABC, BaseModel):
@@ -110,12 +110,14 @@ class TableReader(ABC):
     pass
 
 
-PolarsDataFrameLike = TypeVar("PolarsDataFrameLike", bound=pl.DataFrame)
+SupportedDataFrame = TypeVar(
+  "SupportedDataFrame", bound=Union[pl.DataFrame, pl.LazyFrame]
+)
 
 
 class InputTableReader(TableReader):
   @abstractmethod
-  def preprocess[PolarsDataFrameLike](self, df: PolarsDataFrameLike) -> PolarsDataFrameLike:
+  def preprocess[SupportedDataFrame](self, df: SupportedDataFrame) -> SupportedDataFrame:
     """
     Given the manually loaded user input dataframe, apply column mapping and
     semantic transformations to give the input dataframe that the analyzer

@@ -1,4 +1,6 @@
+import os
 from functools import cached_property
+from typing import Union
 
 import polars as pl
 from dash import Dash
@@ -6,14 +8,16 @@ from pydantic import BaseModel
 
 from analyzer_interface import (AnalyzerInterface, SecondaryAnalyzerInterface,
                                 WebPresenterInterface)
-from analyzer_interface.context import (PrimaryAnalyzerContext as BasePrimaryAnalyzerContext,
-                                        SecondaryAnalyzerContext as BaseSecondaryAnalyzerContext,
-                                        InputTableReader, AssetsReader,
-                                        TableReader, TableWriter,
-                                        WebPresenterContext as BaseWebPresenterContext)
+from analyzer_interface.context import AssetsReader, InputTableReader
+from analyzer_interface.context import \
+    PrimaryAnalyzerContext as BasePrimaryAnalyzerContext
+from analyzer_interface.context import \
+    SecondaryAnalyzerContext as BaseSecondaryAnalyzerContext
+from analyzer_interface.context import TableReader, TableWriter
+from analyzer_interface.context import \
+    WebPresenterContext as BaseWebPresenterContext
 from preprocessing.series_semantic import SeriesSemantic
 from storage import Storage
-import os
 
 
 class PrimaryAnalyzerContext(BasePrimaryAnalyzerContext):
@@ -82,7 +86,7 @@ class PrimaryAnalyzerInputTableReader(InputTableReader, BaseModel):
   def parquet_path(self):
     return self.store._get_project_input_path(self.project_id)
 
-  def preprocess(self, df: pl.DataFrame) -> pl.DataFrame:
+  def preprocess(self, df: Union[pl.DataFrame, pl.LazyFrame]) -> Union[pl.DataFrame, pl.LazyFrame]:
     return df.select([
       pl.col(provider.user_column_name)
         .map_batches(provider.semantic.try_convert)

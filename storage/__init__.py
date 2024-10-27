@@ -7,6 +7,7 @@ import polars as pl
 from filelock import FileLock
 from pydantic import BaseModel
 from tinydb import Query, TinyDB
+from data_utils import count_parquet_rows
 
 STORAGE_VERSION = 1
 
@@ -58,8 +59,7 @@ class Storage:
 
   def get_project_input_stats(self, project_id: str):
     input_path = self._get_project_input_path(project_id)
-    num_rows = pl.scan_parquet(input_path).select(pl.count()).collect().item()
-    return TableStats(num_rows=num_rows)
+    return TableStats(num_rows=count_parquet_rows(input_path))
 
   def save_project_primary_outputs(self, project_id: str, analyzer_id: str, outputs: dict[str, pl.DataFrame]):
     for output_id, output_df in outputs.items():
