@@ -1,5 +1,5 @@
 import os.path
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Iterable
 
 import polars as pl
@@ -27,7 +27,7 @@ def main(context: PrimaryAnalyzerContext):
   )
   df = df.filter(pl.col(COL_USER_ID).is_not_null() &
                  pl.col(COL_TIMESTAMP).is_not_null())
-  df_users = df.select(COL_USER_ID).unique()
+  df_users = df.select(COL_USER_ID).unique().sort(COL_USER_ID)
   df_users = df_users.select(
     pl.col(COL_USER_ID).alias("user_identifier"),
     pl.arange(0, df_users.height).alias(COL_USER_ID)
@@ -46,7 +46,10 @@ def main(context: PrimaryAnalyzerContext):
   phase_results = [
     ltm_aggregate(
       df.with_columns(
-        ((pl.col(COL_TIMESTAMP).dt.epoch("s") - offset) // period).alias("ts")
+        ((pl.col(COL_TIMESTAMP).dt.epoch("s") - offset)
+         // period
+         * period
+         + offset).alias("ts")
       ),
       ["ts"],
       AggregationSpec(
@@ -81,25 +84,29 @@ def main(context: PrimaryAnalyzerContext):
       for chunk_file in os.listdir(explode_base_path)
     ],
     [OUTPUT_COL_USER1, OUTPUT_COL_USER2],
-    count(OUTPUT_COL_FREQ)
+    count(OUTPUT_COL_FREQ),
+    having=pl.col(OUTPUT_COL_FREQ).gt(1)
   )
 
   with count_result as count_paths:
     print(f"Done explosion at {datetime.now()}")
-    lf = pl.concat([
-      pl.scan_parquet(count_path).filter(pl.col(OUTPUT_COL_FREQ).gt(1))
+    df_result = pl.concat([
+      pl.read_parquet(count_path)
       for count_path in count_paths
     ])
-    df_result = lf.collect()
+
+  print(df_result)
+  df_result = df_result.sort(
+    [OUTPUT_COL_FREQ, OUTPUT_COL_USER1, OUTPUT_COL_USER2],
+    descending=[True, False, False]
+  )
 
   df_result = df_result.join(df_users, left_on=OUTPUT_COL_USER1, right_on=COL_USER_ID, how="inner").drop(
     OUTPUT_COL_USER1).rename({"user_identifier": OUTPUT_COL_USER1})
+
   df_result = df_result.join(df_users, left_on=OUTPUT_COL_USER2, right_on=COL_USER_ID, how="inner").drop(
     OUTPUT_COL_USER2).rename({"user_identifier": OUTPUT_COL_USER2})
-  df_result = df_result.sort(
-    [OUTPUT_COL_FREQ, OUTPUT_COL_USER1, OUTPUT_COL_USER2],
-    descending=True
-  )
+
   df_result.write_parquet(
     context.output(OUTPUT_TABLE).parquet_path
   )
@@ -132,8 +139,9 @@ def explode_job(arg: tuple[int, AggregationResult], *, phase_count: int, explode
       ).group_by("chunk")
       for (chunk_index,), chunk_df in chunk_groups:
         print(f"Phase {phase_index + 1}/{phase_count} file {path_index +
-              1}/{len(path)} chunk {chunk_index + 1}")
+              1}/{len(paths)} chunk {chunk_index + 1}")
         chunk_df = chunk_df.explode("user_ids")
+        chunk_df = chunk_df.drop("chunk")
         chunk_df = chunk_df.join(chunk_df, on="ts", how="inner").rename({
           f"user_ids": OUTPUT_COL_USER1,
           f"user_ids_right": OUTPUT_COL_USER2

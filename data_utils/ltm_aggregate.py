@@ -8,7 +8,7 @@ import time
 from functools import partial
 from multiprocessing.sharedctypes import Synchronized
 from shutil import rmtree
-from typing import Union
+from typing import Union,Optional
 
 import polars as pl
 import pyarrow.parquet as pq
@@ -17,6 +17,9 @@ from pydantic import BaseModel
 
 from .count_parquet_rows import count_parquet_rows
 
+HASH_BITS = 64
+HASH_DTYPE = pl.UInt64
+HASH_FN = xxhash.xxh3_64_intdigest
 
 class AggregationSpec(BaseModel):
   lift: list[pl.Expr]
@@ -35,21 +38,18 @@ def count(alias: str):
   )
 
 
-def sum_agg(target: str, alias: str):
-  return AggregationSpec(
-    lift=[pl.sum(target).alias(alias)],
-    fold=[pl.sum(alias)],
-    finish=[pl.col(alias)]
-  )
-
 
 class PartitionContext(BaseModel):
   id: int
   bits: int
   root_dir: str
   repartition_threshold: int
-  spec: AggregationSpec
+  spec: Optional[AggregationSpec]
   by: list[str]
+  having: Optional[pl.Expr]
+
+  class Config:
+    arbitrary_types_allowed = True
 
 
 class AggregationResult(BaseModel):
@@ -64,7 +64,7 @@ class AggregationResult(BaseModel):
 
 
 def get_partition_id(bits: int, current_index: int, parent_id: int, parent_bits: int):
-  return parent_id + ((current_index * (1 << (32 - bits))))
+  return parent_id + ((current_index * (1 << (HASH_BITS - bits))))
 
 
 def get_partition_modulo(partition_bits: int):
@@ -72,19 +72,18 @@ def get_partition_modulo(partition_bits: int):
 
 
 def get_partition_path(root_dir: str, id: int):
-  return os.path.join(root_dir, "partitions", format(id, "08x"))
+  return os.path.join(root_dir, "partitions", format(id, "016x"))
 
 
-def ltm_aggregate(lf: Union[pl.LazyFrame, pl.DataFrame, list[str]], by: list[str], spec: AggregationSpec, *, repartition_threshold=10_000_000):
+def ltm_aggregate(lf: Union[pl.LazyFrame, pl.DataFrame, list[str]], by: list[str], spec: Optional[AggregationSpec], *, having: Optional[pl.Expr]=None, repartition_threshold=8_000_000):
   temp_dir = tempfile.TemporaryDirectory().name
   os.makedirs(temp_dir, exist_ok=True)
+  print(f"temp dir is {temp_dir}")
 
   if isinstance(lf, list):
     input_paths = lf
   else:
     lf = lf.lazy()
-
-    print(f"temp dir is {temp_dir}")
     print(f"persisting parquet")
 
     input_path = os.path.join(temp_dir, "input.parquet")
@@ -101,7 +100,12 @@ def ltm_aggregate(lf: Union[pl.LazyFrame, pl.DataFrame, list[str]], by: list[str
       pl.read_parquet(input_path)
       for input_path in input_paths
     ])
-    df = df.group_by(by).agg(spec.lift).select([*by, *spec.finish])
+
+    if spec:
+      df = df.group_by(by).agg(spec.lift).select([*by, *spec.finish])
+    else:
+      df = df.select(by).unique()
+
     output_path = os.path.join(temp_dir, "finished.parquet")
     df.write_parquet(output_path)
 
@@ -110,10 +114,17 @@ def ltm_aggregate(lf: Union[pl.LazyFrame, pl.DataFrame, list[str]], by: list[str
       temp_dir=temp_dir
     )
 
-  total_row_groups = sum(
-    pq.ParquetFile(input_path).metadata.num_row_groups
+  metadata_by_input: list = [
+    pq.ParquetFile(input_path).metadata
     for input_path in input_paths
-  )
+  ]
+
+  row_group_count_by_input: list[int] = [
+    metadata.num_row_groups
+    for metadata in metadata_by_input
+  ]
+
+  total_row_groups = sum(row_group_count_by_input)
 
   partition_bits = min(max(
     math.ceil(
@@ -122,7 +133,7 @@ def ltm_aggregate(lf: Union[pl.LazyFrame, pl.DataFrame, list[str]], by: list[str
     0
   ), 4)
 
-  print(f"Input has {total_rows} rows in {total_row_groups} row groups")
+  print(f"Input has {total_rows} rows in {total_row_groups} row groups across {len(input_paths)} file(s)")
   print(f"Using {get_partition_modulo(partition_bits)} initial partitions")
 
   for partition_index in range(get_partition_modulo(partition_bits)):
@@ -131,6 +142,20 @@ def ltm_aggregate(lf: Union[pl.LazyFrame, pl.DataFrame, list[str]], by: list[str
       temp_dir,
       partition_id
     ), exist_ok=True)
+
+  def get_row_group_slices(metadata):
+    num_row_groups: int = metadata.num_row_groups
+    num_rows:int = metadata.num_rows
+    row_group_size = num_rows / num_row_groups
+    num_row_groups_per_processing_group = max(1, math.floor(
+      repartition_threshold / row_group_size
+    ))
+
+    return (
+      list(range(i, min(i + num_row_groups_per_processing_group, num_row_groups)))
+      for i in range(0, num_row_groups, num_row_groups_per_processing_group)
+    )
+
 
   with multiprocessing.Pool() as pool:
     partial_lift_job = partial(
@@ -144,10 +169,9 @@ def ltm_aggregate(lf: Union[pl.LazyFrame, pl.DataFrame, list[str]], by: list[str
     partitions_with_data: set[int] = set.union(set(), *pool.map(
       partial_lift_job,
       (
-        (input_path, input_index, row_group_index)
+        (input_path, input_index, row_group_indices)
         for input_index, input_path in enumerate(input_paths)
-        for row_group_index in
-        range(pq.ParquetFile(input_path).metadata.num_row_groups)
+        for row_group_indices in get_row_group_slices(metadata_by_input[input_index])
       )
     ))
 
@@ -159,7 +183,8 @@ def ltm_aggregate(lf: Union[pl.LazyFrame, pl.DataFrame, list[str]], by: list[str
       root_dir=get_partition_path(temp_dir, partition_id),
       repartition_threshold=repartition_threshold,
       spec=spec,
-      by=by
+      by=by,
+      having=having
     ))
 
   active_task_count = multiprocessing.Value("i", 0)
@@ -186,12 +211,13 @@ def ltm_aggregate(lf: Union[pl.LazyFrame, pl.DataFrame, list[str]], by: list[str
   )
 
 
-def lift_job(arg: tuple[str, int, int], *, input_count: int, by: list[pl.Expr], spec: AggregationSpec, partition_bits: int, temp_dir: str):
-  input_path, input_index, row_group_index = arg
+def lift_job(arg: tuple[str, int, list[int]], *, input_count: int, by: list[pl.Expr], spec: Optional[AggregationSpec], partition_bits: int, temp_dir: str):
+  input_path, input_index, row_group_indices = arg
   print(f"lifting input {input_index +
-        1}/{input_count} group {row_group_index}")
+        1}/{input_count} group(s) {min(row_group_indices)}-{max(row_group_indices)}")
   partitions_with_data = partition_and_lift_row_group(
-    row_group_index,
+    row_group_indices,
+    input_index=input_index,
     input_path=input_path, by=by, spec=spec,
     root_partition_bits=partition_bits, root_dir=temp_dir
   )
@@ -210,7 +236,7 @@ def fold_job_worker(queue: multiprocessing.Queue, active_task_count: Synchronize
         if active_task_count.value == 0:
           break
 
-      time.sleep(0.05)
+      time.sleep(0.01)
       continue
 
     with active_task_count.get_lock():
@@ -229,36 +255,38 @@ def fold_job_worker(queue: multiprocessing.Queue, active_task_count: Synchronize
         active_task_count.value -= 1
 
 
-very_large_prime_numbers = [
+INTEGER_HASH_PRIMES = [
   106013, 106019, 106031, 106033, 106087, 106103, 106109, 106121
 ]
+PRIME_MAX_BITS = 17
 
 
 def get_hash_expr(df: pl.DataFrame, by: list[str]):
-  is_every_column_number = all(
-    df.schema.get(col).is_numeric()
+  is_every_column_integer = all(
+    df.schema.get(col).is_integer()
     for col in by
   )
 
-  if is_every_column_number:
+  if is_every_column_integer:
     first = by[0]
     rest = by[1:]
-    hash_expr = (pl.col(first) * very_large_prime_numbers[0])
+    prime_multiplier_modulo = (1<<(HASH_BITS - PRIME_MAX_BITS))
+    hash_expr = (pl.col(first).cast(HASH_DTYPE, wrap_numerical=True) % prime_multiplier_modulo * INTEGER_HASH_PRIMES[0])
     for i, col in enumerate(rest):
-      hash_expr += (pl.col(col) * very_large_prime_numbers[i + 1])
-    return hash_expr % (1 << 32)
+      hash_expr = (hash_expr.cast(HASH_DTYPE, wrap_numerical=True) ^ pl.col(col).cast(pl.UInt64)) % prime_multiplier_modulo * INTEGER_HASH_PRIMES[i + 1]
+    return hash_expr
 
   first = by[0]
   rest = by[1:]
   hash_expr = pl.col(first).cast(pl.String)
   for col in rest:
     hash_expr += pl.col(col).cast(pl.String)
-  return hash_expr.map_elements(xxhash.xxh32_intdigest, return_dtype=pl.UInt32)
+  return hash_expr.map_elements(HASH_FN, return_dtype=HASH_DTYPE)
 
 
-def partition_and_lift_row_group(row_group_index: int, *, input_path: str, by: list[str], spec: AggregationSpec, root_partition_bits: int, root_dir: str):
+def partition_and_lift_row_group(row_group_indices: list[int], *, input_index: int, input_path: str, by: list[str], spec: Optional[AggregationSpec], root_partition_bits: int, root_dir: str):
   parquet_file = pq.ParquetFile(input_path)
-  df = pl.from_arrow(parquet_file.read_row_group(row_group_index))
+  df = pl.from_arrow(parquet_file.read_row_groups(row_group_indices))
   parquet_file.close(force=True)
 
   groups = (
@@ -276,18 +304,21 @@ def partition_and_lift_row_group(row_group_index: int, *, input_path: str, by: l
     partition_id = get_partition_id(root_partition_bits, partition_index, 0, 0)
     partitions_with_data.add(partition_id)
 
-    lifted_partition_df = (
-      partition_df
-        .group_by(by)
-        .agg([pl.first("__hash__"), *spec.lift])
-    )
+    if spec:
+      lifted_partition_df = (
+        partition_df
+          .group_by(by)
+          .agg([pl.first("__hash__"), *spec.lift])
+      )
+    else:
+      lifted_partition_df = partition_df.select(["__hash__", *by]).unique(by)
 
     lifted_partition_df.write_parquet(os.path.join(
       get_partition_path(
         root_dir,
         partition_id
       ),
-      f"group_{row_group_index}.parquet"
+      f"input_{input_index}_groups_{min(row_group_indices)}-{max(row_group_indices)}.parquet"
     ))
 
   return partitions_with_data
@@ -303,27 +334,34 @@ def fold_or_finish_partition(ctx: PartitionContext):
   )
 
   if sum_nonunique_groups == 0:
-    print(f"partition {ctx.id:08x} is empty")
+    print(f"partition {ctx.id:016x} is empty")
     return None
 
   if sum_nonunique_groups < ctx.repartition_threshold:
-    print(f"finishing partition {ctx.id:08x}")
+    print(f"finishing partition {ctx.id:016x} ({sum_nonunique_groups} items in {len(files)} files)")
     df_concat = pl.concat([
       pl.read_parquet(os.path.join(partition_dir, file))
       for file in files
     ])
 
-    df_result = (
-      df_concat
-        .group_by(ctx.by)
-        .agg(ctx.spec.fold)
-        .select([*ctx.by, *ctx.spec.finish])
-    )
+    if ctx.spec:
+      df_result = (
+        df_concat
+          .group_by(ctx.by)
+          .agg(ctx.spec.fold)
+          .select([*ctx.by, *ctx.spec.finish])
+      )
+    else:
+      df_result = df_concat.select(ctx.by).unique()
+
+    if ctx.having is not None:
+      df_result = df_result.filter(ctx.having)
+
     finished_path = os.path.join(partition_dir, "finished.parquet")
     df_result.write_parquet(finished_path)
     return finished_path
 
-  print(f"folding partition {ctx.id:08x}")
+  print(f"folding partition {ctx.id:016x} ({sum_nonunique_groups} items in {len(files)} files)")
   subpartition_bits_gain: int = min(max(math.ceil(math.log2(
     sum_nonunique_groups / ctx.repartition_threshold
   )), 0), 4)
@@ -335,7 +373,9 @@ def fold_or_finish_partition(ctx: PartitionContext):
     ), exist_ok=True)
 
   subpartitions_with_data: set[int] = set()
-  for file in files:
+  subpartition_dfs: dict[int, list[pl.DataFrame]] = {}
+  subpartition_heights: dict[int, int] = {}
+  for file_index, file in enumerate(files):
     df = pl.read_parquet(os.path.join(partition_dir, file))
     groups = df.with_columns(
       (
@@ -349,18 +389,42 @@ def fold_or_finish_partition(ctx: PartitionContext):
       subpartition_id = get_partition_id(
         subpartition_bits, subpartition_index, ctx.id, ctx.bits)
       subpartitions_with_data.add(subpartition_id)
-      subpartition_df = (
-        subpartition_df
-          .group_by("__group__")
-          .agg([pl.first("__hash__"), *ctx.spec.fold])
-      )
-      subpartition_df.write_parquet(os.path.join(
-        get_partition_path(
-          partition_dir,
-          subpartition_id
-        ),
-        f"folded_{ctx.id:08x}.parquet"
-      ))
+
+      if ctx.spec:
+        subpartition_df = (
+          subpartition_df
+            .group_by(ctx.by)
+            .agg([pl.first("__hash__"), *ctx.spec.fold])
+        )
+      else:
+        subpartition_df = subpartition_df.select(["__hash__", *ctx.by],).unique()
+
+      subpartition_dfs.setdefault(subpartition_id, []).append(subpartition_df)
+      subpartition_heights[subpartition_id] = subpartition_heights.get(
+        subpartition_id, 0) + subpartition_df.height
+      if subpartition_heights[subpartition_id] >= ctx.repartition_threshold:
+        subpartition_df_list = subpartition_dfs.pop(subpartition_id)
+        concat_subpartition_df = pl.concat(subpartition_df_list)
+        concat_subpartition_df.write_parquet(os.path.join(
+          get_partition_path(
+            partition_dir,
+            subpartition_id
+          ),
+          f"folded_{ctx.id:016x}_{file_index}.parquet"
+        ))
+        print(f"flushed {subpartition_id:016x} at file {file_index} with {concat_subpartition_df.height} items from {len(subpartition_df_list)} file(s)")
+        subpartition_heights[subpartition_id] = 0
+
+  for subpartition_id, subpartition_df_list in subpartition_dfs.items():
+    concat_subpartition_df = pl.concat(subpartition_df_list)
+    concat_subpartition_df.write_parquet(os.path.join(
+      get_partition_path(
+        partition_dir,
+        subpartition_id
+      ),
+      f"folded_{ctx.id:016x}_{file_index}.parquet"
+    ))
+    print(f"flushed {subpartition_id:016x} at file {file_index} with {concat_subpartition_df.height} items from {len(subpartition_df_list)} file(s)")
 
   return [
     PartitionContext(
