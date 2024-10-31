@@ -135,3 +135,10 @@ class TableWriter(ABC):
     file to it.
     """
     pass
+
+  def parquet_partitions_path(self) -> str:
+    """
+    Gets the path to the table's parquet partition directory. The analyzer can
+    use this to write multiple parquet files.
+    """
+    pass

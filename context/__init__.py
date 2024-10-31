@@ -72,6 +72,10 @@ class PrimaryAnalyzerOutputWriter(TableWriter, BaseModel):
   def parquet_path(self):
     return self.store.get_primary_output_parquet_path(self.project_id, self.analyzer.id, self.output_id)
 
+  @cached_property
+  def parquet_partition_path(self):
+    return self.store.get_primary_output_parquet_partition_path(self.project_id, self.analyzer.id, self.output_id)
+
 
 class PrimaryAnalyzerInputTableReader(InputTableReader, BaseModel):
   project_id: str
@@ -258,6 +262,13 @@ class SecondaryAnalyzerOutputWriter(TableWriter, BaseModel):
   @cached_property
   def parquet_path(self):
     return self.store.get_secondary_output_parquet_path(
+      self.project_id, self.primary_analyzer.id,
+      self.secondary_analyzer.id, self.output_id
+    )
+
+  @cached_property
+  def parquet_partition_path(self):
+    return self.store.get_secondary_output_parquet_partition_path(
       self.project_id, self.primary_analyzer.id,
       self.secondary_analyzer.id, self.output_id
     )

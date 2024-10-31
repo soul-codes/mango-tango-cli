@@ -112,6 +112,12 @@ class Storage:
       f"{output_id}.parquet"
     )
 
+  def get_primary_output_parquet_partition_path(self, project_id: str, analyzer_id: str, output_id: str):
+    return os.path.join(
+      self._get_project_primary_output_root_path(project_id, analyzer_id),
+      output_id
+    )
+
   def load_project_secondary_output(self, project_id: str, analyzer_id: str, secondary_id: str, output_id: str):
     output_path = self.get_secondary_output_parquet_path(
       project_id, analyzer_id, secondary_id, output_id)
@@ -119,7 +125,14 @@ class Storage:
 
   def get_secondary_output_parquet_path(self, project_id: str, analyzer_id: str, secondary_id: str, output_id: str):
     return os.path.join(self._get_project_secondary_output_root_path(
-        project_id, analyzer_id, secondary_id), f"{output_id}.parquet")
+      project_id, analyzer_id, secondary_id), f"{output_id}.parquet")
+
+  def get_secondary_output_parquet_partition_path(self, project_id: str, analyzer_id: str, secondary_id: str, output_id: str):
+    return os.path.join(
+      self._get_project_secondary_output_root_path(
+        project_id, analyzer_id, secondary_id),
+      output_id
+    )
 
   def export_project_primary_output(self, project_id: str, analyzer_id: str, output_id: str, extension: SupportedOutputExtension):
     output_df = self.load_project_primary_output(
@@ -214,11 +227,11 @@ class Storage:
     lock_path = os.path.join(self.temp_dir, "db.lock")
     return FileLock(lock_path)
 
-  @staticmethod
+  @ staticmethod
   def _slugify_name(name: str):
     return re.sub(r'\W+', '_', name.lower()).strip("_")
 
-  @staticmethod
+  @ staticmethod
   def _get_unique_name(base_name: str, validator: Callable[[str], bool]):
     if validator(base_name):
       return base_name
