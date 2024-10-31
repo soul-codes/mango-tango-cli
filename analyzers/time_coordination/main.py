@@ -7,7 +7,7 @@ from typing import Iterable
 import polars as pl
 
 from analyzer_interface.context import PrimaryAnalyzerContext
-from data_utils import AggregationResult, AggregationSpec, count, ltm_aggregate
+from data_utils import AggregationResult, AggregationSpec, count, ltm_aggregate, ltm_sort
 
 from .interface import (COL_TIMESTAMP, COL_USER_ID, OUTPUT_COL_FREQ,
                         OUTPUT_COL_USER1, OUTPUT_COL_USER2, OUTPUT_TABLE)
@@ -123,7 +123,13 @@ def main(context: PrimaryAnalyzerContext):
   )
 
   print("Combining outputs")
-  cooccurrence_result.sink_parquet(context.output(OUTPUT_TABLE).parquet_path)
+  sorted_cooccurrence_result = ltm_sort(
+    cooccurrence_result,
+    by=[OUTPUT_COL_FREQ, OUTPUT_COL_USER1, OUTPUT_COL_USER2],
+    descending=[True, False, False]
+  )
+  sorted_cooccurrence_result.sink_parquet(
+    context.output(OUTPUT_TABLE).parquet_path)
 
 
 def flatten_unique(nested_list):
