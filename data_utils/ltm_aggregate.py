@@ -7,7 +7,7 @@ import tempfile
 import time
 from functools import partial
 from multiprocessing.sharedctypes import Synchronized
-from shutil import rmtree
+from shutil import rmtree, move
 from typing import Union, Optional, Callable, Any
 import psutil
 import polars as pl
@@ -64,7 +64,7 @@ class AggregationResult(BaseModel):
     self.clean()
 
   def clean(self):
-    rmtree(self.temp_dir)
+    rmtree(self.temp_dir, ignore_errors=True)
 
   def merge(self, *, clean=True):
     try:
@@ -87,6 +87,12 @@ class AggregationResult(BaseModel):
     finally:
       if clean:
         self.clean()
+
+  def move(self, output_path: str, *, force=False):
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    if force:
+      rmtree(output_path, ignore_errors=True)
+    move(self.temp_dir, output_path)
 
 
 def get_partition_id(bits: int, current_index: int, parent_id: int, parent_bits: int):
