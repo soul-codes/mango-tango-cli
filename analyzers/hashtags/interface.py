@@ -37,6 +37,7 @@ interface = AnalyzerInterface(
     specific events/timepoints that are hypothesized to have been coordinated.
   """,
     input=AnalyzerInput(
+        table_type="posts",
         columns=[
             InputColumn(
                 name=COL_AUTHOR_ID,
@@ -73,7 +74,7 @@ interface = AnalyzerInterface(
                     "created_at",
                 ],
             ),
-        ]
+        ],
     ),
     outputs=[
         AnalyzerOutput(

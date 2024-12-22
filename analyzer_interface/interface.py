@@ -34,6 +34,8 @@ class BaseAnalyzerInterface(BaseModel):
 
 
 class AnalyzerInput(BaseModel):
+    table_type: Literal["posts"]
+    columns: Literal["message_id", "message_text", "message_date", "message_tags"]
     columns: list["InputColumn"]
 
 
