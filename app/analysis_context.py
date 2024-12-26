@@ -125,7 +125,7 @@ class AnalysisContext(BaseModel):
 
     @property
     def export_root_path(self):
-        return self.app_context.storage._get_project_exports_root_path(self.model)
+        return self.app_context.storage.get_project_exports_root_path(self.model)
 
     def get_all_exportable_outputs(self):
         from .analysis_output_context import AnalysisOutputContext

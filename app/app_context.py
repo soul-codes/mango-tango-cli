@@ -3,11 +3,12 @@ from functools import cached_property
 from pydantic import BaseModel, ConfigDict
 
 from analyzer_interface.suite import AnalyzerSuite
-from storage import Storage
+
+from .store_interface import StorageBackend
 
 
 class AppContext(BaseModel):
-    storage: Storage
+    storage: StorageBackend
     suite: AnalyzerSuite
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

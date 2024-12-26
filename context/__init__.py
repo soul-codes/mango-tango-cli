@@ -49,7 +49,7 @@ class PrimaryAnalyzerContext(BasePrimaryAnalyzerContext):
 
     def prepare(self):
         os.makedirs(
-            self.store._get_project_primary_output_root_path(self.analysis),
+            self.store.get_project_primary_output_root_path(self.analysis),
             exist_ok=True,
         )
 
@@ -129,7 +129,7 @@ class SecondaryAnalyzerContext(BaseSecondaryAnalyzerContext):
 
     def prepare(self):
         os.makedirs(
-            self.store._get_project_secondary_output_root_path(
+            self.store.get_project_secondary_output_root_path(
                 self.analysis, self.secondary_analyzer.id
             ),
             exist_ok=True,
@@ -160,7 +160,7 @@ class WebPresenterContext(BaseWebPresenterContext):
 
     @cached_property
     def state_dir(self) -> str:
-        return self.store._get_web_presenter_state_path(
+        return self.store.get_web_presenter_state_path(
             self.analysis.project_id, self.web_presenter.id
         )
 

@@ -5,9 +5,9 @@ from pydantic import BaseModel
 
 from analyzer_interface import UserInputColumn as BaseUserInputColumn
 from preprocessing.series_semantic import SeriesSemantic, infer_series_semantic
-from storage import AnalysisModel, ProjectModel
 
 from .app_context import AppContext
+from .store_interface import AnalysisModel, ProjectModel
 
 
 class ProjectContext(BaseModel):
@@ -24,8 +24,8 @@ class ProjectContext(BaseModel):
         return self.model.id
 
     def rename(self, new_name: str):
-        self.app_context.storage.rename_project(self.id, new_name)
         self.model.display_name = new_name
+        self.app_context.storage.save_project(self.model)
 
     def delete(self):
         self.app_context.storage.delete_project(self.id)

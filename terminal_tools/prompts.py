@@ -1,4 +1,5 @@
 import os
+from abc import ABC, abstractmethod
 from typing import Optional
 
 from inquirer import checkbox as inquirer_checkbox
@@ -7,7 +8,16 @@ from inquirer import list_input as inquirer_list_input
 from inquirer import text as inquirer_text
 from inquirer.errors import ValidationError
 
-from storage.file_selector import FileSelectorStateManager
+
+class FileSelectorStateManager(ABC):
+    @abstractmethod
+    def get_current_path(self) -> Optional[str]:
+        pass
+
+    @abstractmethod
+    def set_current_path(self, path: str):
+        pass
+
 
 from .utils import clear_printed_lines
 

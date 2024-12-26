@@ -3,7 +3,7 @@ import os
 import re
 import shutil
 from datetime import datetime
-from typing import Callable, Iterable, Literal, Optional
+from typing import Callable, Iterable, Optional
 
 import platformdirs
 import polars as pl
@@ -14,49 +14,17 @@ from tinydb import Query, TinyDB
 from xlsxwriter import Workbook
 
 from analyzer_interface.interface import AnalyzerOutput
-
-from .file_selector import FileSelectorStateManager
-
-
-class ProjectModel(BaseModel):
-    class_: Literal["project"] = "project"
-    id: str
-    display_name: str
-
-
-class SettingsModel(BaseModel):
-    class_: Literal["settings"] = "settings"
-    export_chunk_size: Optional[int | Literal[False]] = None
+from app.store_interface import (
+    AnalysisModel,
+    ProjectModel,
+    SettingsModel,
+    StatesModel,
+    StorageBackend,
+    SupportedOutputExtension,
+)
 
 
-class FileSelectionState(BaseModel):
-    class_: Literal["file_selector_state"] = "file_selector_state"
-    last_path: Optional[str] = None
-
-
-class AnalysisModel(BaseModel):
-    class_: Literal["analysis"] = "analysis"
-    analysis_id: str
-    project_id: str
-    display_name: str
-    primary_analyzer_id: str
-    path: str
-    column_mapping: Optional[dict[str, str]] = None
-    create_timestamp: Optional[float] = None
-    is_draft: bool = False
-
-    def create_time(self):
-        return (
-            datetime.fromtimestamp(self.create_timestamp)
-            if self.create_timestamp
-            else None
-        )
-
-
-SupportedOutputExtension = Literal["parquet", "csv", "xlsx", "json"]
-
-
-class Storage:
+class Storage(StorageBackend):
     def __init__(self, *, app_name: str, app_author: str):
         self.user_data_dir = platformdirs.user_data_dir(
             appname=app_name, appauthor=app_author, ensure_exists=True
@@ -67,8 +35,6 @@ class Storage:
         self.db = TinyDB(self._get_db_path())
         with self._lock_database():
             self._bootstrap_analyses_v1()
-
-        self.file_selector_state = AppFileSelectorStateManager(self)
 
     def init_project(self, *, display_name: str, input_temp_file: str):
         with self._lock_database():
@@ -104,12 +70,12 @@ class Storage:
         project_path = self._get_project_path(project_id)
         shutil.rmtree(project_path, ignore_errors=True)
 
-    def rename_project(self, project_id: str, name: str):
+    def save_project(self, model: ProjectModel):
         with self._lock_database():
             q = Query()
             self.db.update(
-                {"display_name": name},
-                (q["id"] == project_id) & (q["class_"] == "project"),
+                model.model_dump(),
+                (q["id"] == model.id) & (q["class_"] == "project"),
             )
 
     def load_project_input(self, project_id: str, *, n_records: Optional[int] = None):
@@ -127,7 +93,7 @@ class Storage:
         for output_id, output_df in outputs.items():
             self._save_output(
                 os.path.join(
-                    self._get_project_primary_output_root_path(analysis),
+                    self.get_project_primary_output_root_path(analysis),
                     output_id,
                 ),
                 output_df,
@@ -143,9 +109,7 @@ class Storage:
         for output_id, output_df in outputs.items():
             self._save_output(
                 os.path.join(
-                    self._get_project_secondary_output_root_path(
-                        analysis, secondary_id
-                    ),
+                    self.get_project_secondary_output_root_path(analysis, secondary_id),
                     output_id,
                 ),
                 output_df,
@@ -160,7 +124,7 @@ class Storage:
         output_df: pl.DataFrame,
         extension: SupportedOutputExtension,
     ):
-        root_path = self._get_project_secondary_output_root_path(analysis, secondary_id)
+        root_path = self.get_project_secondary_output_root_path(analysis, secondary_id)
         self._save_output(
             os.path.join(root_path, output_id),
             output_df,
@@ -196,7 +160,7 @@ class Storage:
 
     def get_primary_output_parquet_path(self, analysis: AnalysisModel, output_id: str):
         return os.path.join(
-            self._get_project_primary_output_root_path(analysis),
+            self.get_project_primary_output_root_path(analysis),
             f"{output_id}.parquet",
         )
 
@@ -212,7 +176,7 @@ class Storage:
         self, analysis: AnalysisModel, secondary_id: str, output_id: str
     ):
         return os.path.join(
-            self._get_project_secondary_output_root_path(analysis, secondary_id),
+            self.get_project_secondary_output_root_path(analysis, secondary_id),
             f"{output_id}.parquet",
         )
 
@@ -227,7 +191,7 @@ class Storage:
     ):
         return self._export_output(
             self.get_primary_output_parquet_path(analysis, output_id),
-            os.path.join(self._get_project_exports_root_path(analysis), output_id),
+            os.path.join(self.get_project_exports_root_path(analysis), output_id),
             extension=extension,
             spec=spec,
             export_chunk_size=export_chunk_size,
@@ -244,7 +208,7 @@ class Storage:
         export_chunk_size: Optional[int] = None,
     ):
         exported_path = os.path.join(
-            self._get_project_exports_root_path(analysis),
+            self.get_project_exports_root_path(analysis),
             (
                 secondary_id
                 if secondary_id == output_id
@@ -433,14 +397,14 @@ class Storage:
     def _get_project_input_path(self, project_id: str):
         return os.path.join(self._get_project_path(project_id), "input.parquet")
 
-    def _get_project_primary_output_root_path(self, analysis: AnalysisModel):
+    def get_project_primary_output_root_path(self, analysis: AnalysisModel):
         return os.path.join(
             self._get_project_path(analysis.project_id),
             analysis.path,
             "primary_outputs",
         )
 
-    def _get_project_secondary_output_root_path(
+    def get_project_secondary_output_root_path(
         self, analysis: AnalysisModel, secondary_id: str
     ):
         return os.path.join(
@@ -450,12 +414,12 @@ class Storage:
             secondary_id,
         )
 
-    def _get_project_exports_root_path(self, analysis: AnalysisModel):
+    def get_project_exports_root_path(self, analysis: AnalysisModel):
         return os.path.join(
             self._get_project_path(analysis.project_id), analysis.path, "exports"
         )
 
-    def _get_web_presenter_state_path(self, analysis: AnalysisModel, presenter_id: str):
+    def get_web_presenter_state_path(self, analysis: AnalysisModel, presenter_id: str):
         return os.path.join(
             self._get_project_path(analysis.project_id),
             analysis.path,
@@ -496,6 +460,36 @@ class Storage:
                 }
             )
             self.db.upsert(new_settings.model_dump(), q["class_"] == "settings")
+
+    def get_states(self):
+        with self._lock_database():
+            return self._get_states()
+
+    def _get_states(self):
+        q = Query()
+        state = self.db.search(
+            (q["class_"] == "file_selector_state") | (q["class_"] == "states")
+        )
+        if state:
+            return StatesModel(**{**state[0], "class_": "states"})
+        return StatesModel()
+
+    def set_states(self, **kwargs):
+        with self._lock_database():
+            q = Query()
+            states = self._get_states()
+            new_states = StatesModel(
+                **{
+                    **states.model_dump(),
+                    **{
+                        key: value for key, value in kwargs.items() if value is not None
+                    },
+                }
+            )
+            self.db.upsert(
+                new_states.model_dump(),
+                (q["class_"] == "file_selector_state") | (q["class_"] == "states"),
+            )
 
     @staticmethod
     def _slugify_name(name: str):
@@ -542,27 +536,3 @@ def collect_dataframe_chunks(
 
     if output_buffer:
         yield pl.concat(output_buffer)
-
-
-class AppFileSelectorStateManager(FileSelectorStateManager):
-    def __init__(self, storage: "Storage"):
-        self.storage = storage
-
-    def get_current_path(self):
-        return self._load_state().last_path
-
-    def set_current_path(self, path: str):
-        self._save_state(path)
-
-    def _load_state(self):
-        q = Query()
-        state = self.storage.db.search(q["class_"] == "file_selector_state")
-        if state:
-            return FileSelectionState(**state[0])
-        return FileSelectionState()
-
-    def _save_state(self, last_path: str):
-        self.storage.db.upsert(
-            FileSelectionState(last_path=last_path).model_dump(),
-            Query()["class_"] == "file_selector_state",
-        )

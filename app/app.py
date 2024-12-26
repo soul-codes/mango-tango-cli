@@ -3,6 +3,7 @@ from tempfile import NamedTemporaryFile
 from pydantic import BaseModel
 
 from importing import ImporterSession
+from terminal_tools.prompts import FileSelectorStateManager
 
 from .app_context import AppContext
 from .project_context import ProjectContext
@@ -27,4 +28,15 @@ class App(BaseModel):
 
     @property
     def file_selector_state(self):
-        return self.context.storage.file_selector_state
+        return AppFileSelectorStateManager(self.context)
+
+
+class AppFileSelectorStateManager(FileSelectorStateManager):
+    def __init__(self, context: AppContext):
+        self.storage = context.storage
+
+    def get_current_path(self):
+        return self.storage.get_states().last_path
+
+    def set_current_path(self, path: str):
+        self.storage.set_states(last_path=path)
