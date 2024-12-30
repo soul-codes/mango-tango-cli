@@ -1,7 +1,9 @@
 from typing import Literal, Optional
 
 import polars as pl
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
+
+from .schema import Attribute, ObjectClass
 
 
 class BaseAnalyzerInterface(BaseModel):
@@ -32,24 +34,42 @@ class BaseAnalyzerInterface(BaseModel):
   A longer description of what the analyzer does that will be shown separately.
   """
 
+    view_presets: Optional[list["TableView"]] = None
+    """
+    Contributes a view preset to the system that can be used to export data
+    that has run this analyzer.
+    """
+
 
 class AnalyzerInput(BaseModel):
-    columns: list["InputColumn"]
+    object_class: ObjectClass
+    required_attributes: list[Attribute]
+
+    @model_validator(mode="after")
+    def _validate_attributes(self):
+        object_attributes = set(value for _, value in self.object_class.attrs)
+        for attr in self.required_attributes:
+            if attr not in object_attributes:
+                raise ValueError(
+                    f"Attribute {attr} is specified by the analyzer input but not found in the object schema"
+                )
+        return self
 
 
 class AnalyzerOutput(BaseModel):
     id: str
     """
-  Uniquely identifies the output data schema for the analyzer. The analyzer
-  must include this key in the output dictionary.
-  """
+    Uniquely identifies the output data schema for the analyzer. The analyzer
+    must include this key in the output dictionary.
+    """
 
     name: str
     """The human-friendly for the output."""
 
     description: Optional[str] = None
 
-    columns: list["OutputColumn"]
+    object_class: ObjectClass
+    output_attributes: list[Attribute]
 
     internal: bool = False
 
@@ -74,16 +94,66 @@ class AnalyzerOutput(BaseModel):
         )
 
 
+class TableViewColumn(BaseModel):
+    attribute: Attribute
+    """
+    The attributes that will be included in the export.
+
+    If the table view's primary object class is itse composite, and the attribute
+    is one of the components, the attribute will simply be repeated to correlate
+    with the primary object.
+
+    Currently, attribute included in the view must either be
+    - a direct attribute of the primary object class, where it matches
+      one-to-one, or
+    - an attribute of a composite dimension of the primary object class, if
+      the primary object class is composite, where it matches one-to-one.
+    - an attribute of an atomic object class that is a composite dimension of
+      the primary object class, if the primary object class is composite, where
+      it is repeated for each matching composite instance.
+
+    The case where the primary object class is atomic and the attribute is
+    one of a composite object class containing the primary object class is
+    not yet supported.
+    """
+
+    column_id: Optional[str]
+    column_human_readable_name: Optional[str]
+
+    def __init__(
+        self,
+        attribute: Attribute,
+        *,
+        column_id: Optional[str] = None,
+        column_human_readable_name: Optional[str] = None,
+    ):
+        super().__init__(
+            attribute=attribute,
+            column_id=column_id,
+            column_human_readable_name=column_human_readable_name,
+        )
+
+
+class TableView(BaseModel):
+    id: str
+    name: str
+
+    primary_object: ObjectClass
+    """The object class that will be represented as a single row in the export."""
+
+    columns: list[TableViewColumn]
+
+
 class AnalyzerInterface(BaseAnalyzerInterface):
     input: AnalyzerInput
     """
-  Specifies the input data schema for the analyzer.
-  """
+    Specifies the input data schema for the analyzer.
+    """
 
     outputs: list["AnalyzerOutput"]
     """
-  Specifies the output data schema for the analyzer.
-  """
+    Specifies the output data schema for the analyzer.
+    """
 
     kind: Literal["primary"] = "primary"
 
@@ -115,47 +185,3 @@ class SecondaryAnalyzerInterface(DerivedAnalyzerInterface):
 
 class WebPresenterInterface(DerivedAnalyzerInterface):
     kind: Literal["web"] = "web"
-
-
-DataType = Literal[
-    "text", "integer", "float", "boolean", "datetime", "identifier", "url", "time"
-]
-"""
-The semantic data type for a data column. This is not quite the same as
-structural data types like polars or pandas or even arrow types, but they
-represent how the data is intended to be interpreted.
-
-- `text` is expected to be a free-form human-readable text content.
-- `integer` and `float` are meant to be manipulated arithmetically.
-- `boolean` is a binary value.
-- `datetime` represents time and are meant to be manipulated as time values.
-- `time` represents time within a day, not including the date information.
-- `identifier` is a unique identifier for a record. It is not expected to be manipulated in any way.
-- `url` is a string that represents a URL.
-"""
-
-
-class Column(BaseModel):
-    name: str
-    human_readable_name: Optional[str] = None
-    description: Optional[str] = None
-    data_type: DataType
-
-    def human_readable_name_or_fallback(self):
-        return self.human_readable_name or self.name
-
-
-class InputColumn(Column):
-    name_hints: list[str] = []
-    """
-  Specifies a list of space-separated words that are likely to be found in the
-  column name of the user-provided data. This is used to help the user map the
-  input columns to the expected columns.
-
-  Any individual hint matching is sufficient for a match to be called. The hint
-  in turn is matched if every word matches some part of the column name.
-  """
-
-
-class OutputColumn(Column):
-    pass

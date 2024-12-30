@@ -9,10 +9,9 @@ from .interface import (
     AnalyzerInput,
     AnalyzerInterface,
     AnalyzerOutput,
-    DataType,
-    InputColumn,
-    OutputColumn,
     SecondaryAnalyzerInterface,
+    TableView,
+    TableViewColumn,
     WebPresenterInterface,
 )
 from .suite import AnalyzerSuite

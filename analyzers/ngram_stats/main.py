@@ -1,38 +1,36 @@
 import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
+from utils.static_dict import StaticDict
 
 from analyzer_interface.context import SecondaryAnalyzerContext
 from terminal_tools import ProgressReporter
+from analyzer_interface.schema import Attribute
+from object_schemas import MessageAuthor, Message
 
 from ..ngrams.interface import (
-    COL_AUTHOR_ID,
-    COL_MESSAGE_ID,
-    COL_MESSAGE_NGRAM_COUNT,
-    COL_MESSAGE_SURROGATE_ID,
-    COL_MESSAGE_TEXT,
-    COL_MESSAGE_TIMESTAMP,
-    COL_NGRAM_ID,
-    COL_NGRAM_LENGTH,
-    COL_NGRAM_WORDS,
-    OUTPUT_MESSAGE,
     OUTPUT_MESSAGE_NGRAMS,
-    OUTPUT_NGRAM_DEFS,
+    OUTPUT_NGRAMS,
 )
+from ..ngrams.schema import Ngram, MessageNgram
 from .interface import (
-    COL_NGRAM_DISTINCT_POSTER_COUNT,
-    COL_NGRAM_REPS_PER_USER,
-    COL_NGRAM_TOTAL_REPS,
-    OUTPUT_NGRAM_FULL,
     OUTPUT_NGRAM_STATS,
 )
+
+
+class Attrs(StaticDict[Attribute]):
+    MessageId = Message.id
+    NgramId = Ngram.id
+    MessageNgramCount = MessageNgram.attrs.occurrence_count
+    Text = Message.attrs.text
+    Author = MessageAuthor.dims.user.id
 
 
 def main(context: SecondaryAnalyzerContext):
     df_message_ngrams = pl.read_parquet(
         context.base.table(OUTPUT_MESSAGE_NGRAMS).parquet_path
     )
-    df_ngrams = pl.read_parquet(context.base.table(OUTPUT_NGRAM_DEFS).parquet_path)
+    df_ngrams = pl.read_parquet(context.base.table(OUTPUT_NGRAMS).parquet_path)
     df_messages = pl.read_parquet(context.base.table(OUTPUT_MESSAGE).parquet_path)
 
     dict_authors_by_message = {

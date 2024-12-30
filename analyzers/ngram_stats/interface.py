@@ -1,24 +1,16 @@
-from analyzer_interface import AnalyzerOutput, OutputColumn, SecondaryAnalyzerInterface
-
-from ..ngrams import interface as ngrams_interface
-from ..ngrams.interface import (
-    COL_AUTHOR_ID,
-    COL_MESSAGE_ID,
-    COL_MESSAGE_NGRAM_COUNT,
-    COL_MESSAGE_SURROGATE_ID,
-    COL_MESSAGE_TEXT,
-    COL_MESSAGE_TIMESTAMP,
-    COL_NGRAM_ID,
-    COL_NGRAM_LENGTH,
-    COL_NGRAM_WORDS,
+from analyzer_interface import (
+    AnalyzerOutput,
+    SecondaryAnalyzerInterface,
+    TableView,
+    TableViewColumn,
 )
 
-COL_NGRAM_TOTAL_REPS = "total_reps"
-COL_NGRAM_REPS_PER_USER = "reps_per_user"
-COL_NGRAM_DISTINCT_POSTER_COUNT = "distinct_posters"
+
+from ..ngrams import interface as ngrams_interface
+from ..ngrams.schema import Ngram, MessageNgram
+
 
 OUTPUT_NGRAM_STATS = "ngram_stats"
-OUTPUT_NGRAM_FULL = "ngram_full"
 
 
 interface = SecondaryAnalyzerInterface(
@@ -31,73 +23,28 @@ interface = SecondaryAnalyzerInterface(
         AnalyzerOutput(
             id=OUTPUT_NGRAM_STATS,
             name="N-gram repetition statistics",
+            object_class=Ngram,
             columns=[
-                OutputColumn(name=COL_NGRAM_ID, data_type="identifier"),
-                OutputColumn(name=COL_NGRAM_LENGTH, data_type="integer"),
-                OutputColumn(name=COL_NGRAM_WORDS, data_type="text"),
-                OutputColumn(name=COL_NGRAM_TOTAL_REPS, data_type="integer"),
-                OutputColumn(name=COL_NGRAM_DISTINCT_POSTER_COUNT, data_type="integer"),
+                Ngram.attrs.total_repetition_count,
+                Ngram.attrs.distinct_poster_count,
             ],
         ),
-        AnalyzerOutput(
-            id=OUTPUT_NGRAM_FULL,
-            name="N-gram full report",
+    ],
+    view_presets=[
+        TableView(
+            id="ngram_report",
+            name="N-gram Report",
+            primary_object=MessageNgram,
             columns=[
-                OutputColumn(
-                    name=COL_NGRAM_ID,
-                    data_type="identifier",
-                    human_readable_name="ngram ID",
-                ),
-                OutputColumn(
-                    name=COL_NGRAM_LENGTH,
-                    data_type="integer",
-                    human_readable_name="ngram length",
-                ),
-                OutputColumn(
-                    name=COL_NGRAM_WORDS,
-                    data_type="text",
-                    human_readable_name="ngram content",
-                ),
-                OutputColumn(
-                    name=COL_NGRAM_TOTAL_REPS,
-                    data_type="integer",
-                    human_readable_name="ngram frequency",
-                ),
-                OutputColumn(
-                    name=COL_NGRAM_DISTINCT_POSTER_COUNT,
-                    data_type="integer",
-                    human_readable_name="distinct user count",
-                ),
-                OutputColumn(
-                    name=COL_AUTHOR_ID,
-                    data_type="identifier",
-                    human_readable_name="unique username",
-                ),
-                OutputColumn(
-                    name=COL_NGRAM_REPS_PER_USER,
-                    data_type="integer",
-                    human_readable_name="frequency by user",
-                ),
-                OutputColumn(
-                    name=COL_MESSAGE_SURROGATE_ID,
-                    data_type="identifier",
-                    human_readable_name="UPN",
-                ),
-                OutputColumn(
-                    name=COL_MESSAGE_ID,
-                    data_type="identifier",
-                    human_readable_name="post identifier",
-                ),
-                OutputColumn(
-                    name=COL_MESSAGE_TEXT,
-                    data_type="text",
-                    human_readable_name="post content",
-                ),
-                OutputColumn(
-                    name=COL_MESSAGE_TIMESTAMP,
-                    data_type="datetime",
-                    human_readable_name="timestamp",
-                ),
+                TableViewColumn(MessageNgram.dims.ngram.id),
+                TableViewColumn(MessageNgram.dims.ngram.attrs.words),
+                TableViewColumn(MessageNgram.dims.ngram.attrs.total_repetition_count),
+                TableViewColumn(MessageNgram.dims.ngram.attrs.distinct_poster_count),
+                TableViewColumn(MessageNgram.dims.message.id),
+                TableViewColumn(MessageNgram.dims.message.attrs.author.type),
+                TableViewColumn(MessageNgram.dims.message.attrs.text),
+                TableViewColumn(MessageNgram.dims.message.attrs.timestamp),
+                TableViewColumn(MessageNgram.attrs.occurrence_count),
             ],
         ),
     ],

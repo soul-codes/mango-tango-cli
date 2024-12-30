@@ -4,10 +4,12 @@ import polars as pl
 from pydantic import BaseModel
 
 from analyzer_interface import UserInputColumn as BaseUserInputColumn
+from analyzer_interface.schema import ObjectSchema
 from preprocessing.series_semantic import SeriesSemantic, infer_series_semantic
+from storage import AnalysisModel, ProjectModel
 
 from .app_context import AppContext
-from .store_interface import AnalysisModel, ProjectModel
+from .store_interface import AnalysisModel, ProjectModel, ProjectShapeModel
 
 
 class ProjectContext(BaseModel):
@@ -26,6 +28,24 @@ class ProjectContext(BaseModel):
     def rename(self, new_name: str):
         self.model.display_name = new_name
         self.app_context.storage.save_project(self.model)
+
+    def set_object_schema(self, object_schema: ObjectSchema):
+        if (
+            self.model.shape is None
+            or self.model.shape.base_object_schema_id != object_schema.id
+        ):
+            self.model.shape = ProjectShapeModel(
+                base_object_schema_id=object_schema.id,
+            )
+            self.app_context.storage.save_project(self.model)
+
+        from .project_shape_context import ProjectShapeContext
+
+        return ProjectShapeContext(
+            model=self.model.shape,
+            project_context=self,
+            app_context=self.app_context,
+        )
 
     def delete(self):
         self.app_context.storage.delete_project(self.id)

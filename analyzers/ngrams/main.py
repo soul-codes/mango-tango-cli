@@ -3,36 +3,32 @@ import re
 import polars as pl
 
 from analyzer_interface.context import PrimaryAnalyzerContext
+from analyzer_interface.schema import Attribute
+from object_schemas import MessageAuthor, Message
 from terminal_tools import ProgressReporter
+from utils.static_dict import StaticDict
 
-from .interface import (
-    COL_AUTHOR_ID,
-    COL_MESSAGE_ID,
-    COL_MESSAGE_NGRAM_COUNT,
-    COL_MESSAGE_SURROGATE_ID,
-    COL_MESSAGE_TEXT,
-    COL_MESSAGE_TIMESTAMP,
-    COL_NGRAM_ID,
-    COL_NGRAM_LENGTH,
-    COL_NGRAM_WORDS,
-    OUTPUT_MESSAGE,
-    OUTPUT_MESSAGE_NGRAMS,
-    OUTPUT_NGRAM_DEFS,
-)
+from .interface import OUTPUT_MESSAGE_NGRAMS, OUTPUT_NGRAMS
+from .schema import MessageNgram, Ngram
+
+
+class Attrs(StaticDict[Attribute]):
+    MessageId = Message.id
+    NgramId = Ngram.id
+    MessageNgramCount = MessageNgram.attrs.occurrence_count
+    Text = Message.attrs.text
+    Author = MessageAuthor.dims.user.id
 
 
 def main(context: PrimaryAnalyzerContext):
     input_reader = context.input()
     df_input = input_reader.preprocess(pl.read_parquet(input_reader.parquet_path))
     with ProgressReporter("Preprocessing messages"):
-        df_input = df_input.with_columns(
-            (pl.int_range(pl.len()) + 1).alias(COL_MESSAGE_SURROGATE_ID)
-        )
         df_input = df_input.filter(
-            pl.col(COL_MESSAGE_TEXT).is_not_null()
-            & (pl.col(COL_MESSAGE_TEXT) != "")
-            & pl.col(COL_AUTHOR_ID).is_not_null()
-            & (pl.col(COL_AUTHOR_ID) != "")
+            Attrs.Text.pl.is_not_null()
+            & (Attrs.Text.pl != "")
+            & Attrs.Author.pl.is_not_null()
+            & (Attrs.Author.pl != "")
         )
 
     with ProgressReporter("Generating n-grams") as progress:
@@ -42,15 +38,15 @@ def main(context: PrimaryAnalyzerContext):
             num_rows = df_input.height
             current_row = 0
             for row in df_input.iter_rows(named=True):
-                tokens = tokenize(row[COL_MESSAGE_TEXT])
+                tokens = tokenize(row[Attrs.MessageId.nam])
                 for ngram in ngrams(tokens, 3, 5):
                     serialized_ngram = serialize_ngram(ngram)
                     if serialized_ngram not in ngrams_by_id:
                         ngrams_by_id[serialized_ngram] = len(ngrams_by_id)
                     ngram_id = ngrams_by_id[serialized_ngram]
                     yield {
-                        COL_MESSAGE_SURROGATE_ID: row[COL_MESSAGE_SURROGATE_ID],
-                        COL_NGRAM_ID: ngram_id,
+                        Attrs.MessageId.col: row[Attrs.MessageId.col],
+                        Attrs.NgramId.col: ngram_id,
                     }
                 current_row = current_row + 1
                 if current_row % 100 == 0:
@@ -59,45 +55,68 @@ def main(context: PrimaryAnalyzerContext):
         ngrams_by_id: dict[str, int] = {}
         df_ngram_instances = pl.DataFrame(get_ngram_rows(ngrams_by_id))
 
-    with ProgressReporter("Computing per-message n-gram statistics"):
-        (
+    with ProgressReporter("Computing n-gram occurrence count per message"):
+        df_ngram_message = (
             pl.DataFrame(df_ngram_instances)
-            .group_by(COL_MESSAGE_SURROGATE_ID, COL_NGRAM_ID)
-            .agg(pl.count().alias(COL_MESSAGE_NGRAM_COUNT))
-            .write_parquet(context.output(OUTPUT_MESSAGE_NGRAMS).parquet_path)
-        )
-
-    with ProgressReporter("Outputting n-gram definitions"):
-        (
-            pl.DataFrame(
+            .group_by(Attrs.MessageId.col, Attrs.MessageId.col)
+            .agg(pl.count().alias(MessageNgram.attrs.occurrence_count.col))
+            .rename(
                 {
-                    COL_NGRAM_ID: list(ngrams_by_id.values()),
-                    COL_NGRAM_WORDS: list(ngrams_by_id.keys()),
+                    Attrs.MessageId.col: MessageNgram.dims.message.id.col,
+                    Attrs.NgramId.col: MessageNgram.dims.ngram.id.col,
                 }
             )
-            .with_columns(
-                [
-                    pl.col(COL_NGRAM_WORDS)
-                    .str.split(" ")
-                    .list.len()
-                    .alias(COL_NGRAM_LENGTH)
-                ]
-            )
-            .write_parquet(context.output(OUTPUT_NGRAM_DEFS).parquet_path)
+        )
+        df_ngram_message.write_parquet(
+            context.output(OUTPUT_MESSAGE_NGRAMS).parquet_path
         )
 
-    with ProgressReporter("Outputting messages"):
-        (
-            df_input.select(
-                [
-                    COL_MESSAGE_SURROGATE_ID,
-                    COL_MESSAGE_ID,
-                    COL_MESSAGE_TEXT,
-                    COL_AUTHOR_ID,
-                    COL_MESSAGE_TIMESTAMP,
-                ]
-            ).write_parquet(context.output(OUTPUT_MESSAGE).parquet_path)
+    with ProgressReporter("Computing ngram statistics"):
+        dict_authors_by_message = {
+            row[MessageAuthor.dims.message.id.col]: row[MessageAuthor.dims.user.id.col]
+            for row in df_input.iter_rows(named=True)
+        }
+
+        df_ngrams = pl.DataFrame(
+            {
+                Ngram.id.col: list(ngrams_by_id.values()),
+                Ngram.attrs.words.col: list(ngrams_by_id.keys()),
+            }
+        ).with_columns(
+            [
+                Ngram.attrs.words.pl.str.split(" ")
+                .list.len()
+                .alias(Ngram.attrs.length.col)
+            ]
         )
+
+        df_ngrams = (
+            df_ngram_message.with_columns(
+                MessageNgram.attrs.occurrence_count.pl.sum()
+                .over([MessageNgram.dims.ngram.id.col])
+                .alias(Ngram.attrs.total_repetition_count.col)
+            )
+            .filter(Ngram.attrs.total_repetition_count.col > 1)
+            .group_by(Ngram.id.col)
+            .agg(
+                Ngram.attrs.total_repetition_count.pl.first().alias(
+                    Ngram.attrs.total_repetition_count.col
+                ),
+                MessageAuthor.dims.message.id.pl.replace_strict(dict_authors_by_message)
+                .n_unique()
+                .alias(Ngram.attrs.distinct_poster_count.col),
+            )
+            .with_columns(
+                Ngram.id.pl.replace_strict(ngrams_by_id).alias(Ngram.attrs.words.col)
+            )
+            .with_columns(
+                Ngram.attrs.words.pl.str.split(" ")
+                .list.len()
+                .alias(Ngram.attrs.length.col)
+            )
+        )
+
+        df_ngrams.write_parquet(context.output(OUTPUT_NGRAMS).parquet_path)
 
 
 def tokenize(input: str) -> list[str]:

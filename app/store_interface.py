@@ -6,12 +6,38 @@ import polars as pl
 from pydantic import BaseModel
 
 from analyzer_interface import AnalyzerOutput
+from shaping.input_assignment import (
+    VerbatimAssignmentSettings,
+    DateTimeConcatAssignmentSettings,
+    ArrayDelimitedAssignmentSettings,
+)
 
 
 class ProjectModel(BaseModel):
     class_: Literal["project"] = "project"
     id: str
     display_name: str
+    shape: Optional["ProjectShapeModel"] = None
+
+
+type AssignmentModel = VerbatimAssignmentModel | DateTimeConcatAssignmentModel | ArrayDelimitedAssignmentModel
+
+
+class VerbatimAssignmentModel(VerbatimAssignmentSettings):
+    attribute_id: str
+
+
+class DateTimeConcatAssignmentModel(DateTimeConcatAssignmentSettings):
+    attribute_id: str
+
+
+class ArrayDelimitedAssignmentModel(ArrayDelimitedAssignmentSettings):
+    attribute_id: str
+
+
+class ProjectShapeModel(BaseModel):
+    base_object_schema_id: str
+    attribute_assignments: list[AssignmentModel] = []
 
 
 class SettingsModel(BaseModel):
